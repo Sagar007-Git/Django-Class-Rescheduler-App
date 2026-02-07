@@ -86,7 +86,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'scheduler_db',  # Ensure this DB exists in MySQL
         'USER': 'root',          # Your MySQL username
-        'PASSWORD': '@Sagar1947', # Your MySQL password
+        'PASSWORD': '---', # Your MySQL password
         'HOST': 'localhost',
         'PORT': '3306',
     }
