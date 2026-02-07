@@ -145,3 +145,25 @@ To run this backend on your local machine:
 * **201 Created:** Successfully created (e.g., new request).
 * **400 Bad Request:** Logic error (e.g., "Too late! Another teacher accepted it").
 * **403 Forbidden:** Permission denied (e.g., Non-HOD trying to approve).
+
+## 5. Database Setup (Crucial Step)
+
+You do NOT need to create tables manually. Django will create them for you. 
+You only need to create the **empty database shell**.
+
+1.  **Open MySQL Workbench** (or your command line).
+2.  **Run this SQL command:**
+    ```sql
+    CREATE DATABASE scheduler_db;
+    ```
+3.  **That's it.** Now go to your terminal and run:
+    ```bash
+    python manage.py migrate
+    ```
+    *(This command magically converts the Python code into the 8 Tables: Teachers, Classes, Requests, etc.)*
+
+4.  **Create the Superuser (Admin):**
+    ```bash
+    python manage.py createsuperuser
+    ```
+    *(Follow the prompts to create your login for the Admin Panel).*
