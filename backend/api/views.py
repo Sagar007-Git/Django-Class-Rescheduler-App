@@ -1,3 +1,8 @@
+
+
+from django.contrib.auth import authenticate
+from rest_framework.authtoken.models import Token
+from rest_framework.permissions import AllowAny
 from django.shortcuts import get_object_or_404
 from django.db import transaction, models
 from django.db.models import Count, Q
@@ -28,6 +33,17 @@ def get_profile(request):
     except Teacher.DoesNotExist:
         return Response({"error": "User is not linked to a Teacher profile"}, status=400)
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_view(request):
+    username = request.data.get('username')
+    password = request.data.get('password')
+    user = authenticate(username=username, password=password)
+    if user:
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response({'token': token.key})
+    else:
+        return Response({'error': 'Invalid credentials'}, status=400)
 # --- 2. SCHEDULE LOGIC ---
 
 @api_view(['GET'])
@@ -236,3 +252,27 @@ def hod_action(request, request_id):
         return Response({"message": "Request Rejected."})
     
     return Response({"error": "Invalid action"}, status=400)
+
+
+# --- 6. UTILITY ENDPOINTS ---
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def update_fcm_token(request):
+    """
+    The Mobile App calls this to save the user's device token.
+    Without this, we can't send push notifications.
+    """
+    try:
+        teacher = Teacher.objects.get(user=request.user)
+        token = request.data.get('fcm_token')
+        
+        if token:
+            teacher.fcm_token = token
+            teacher.save()
+            return Response({"message": "FCM Token updated successfully."})
+        else:
+            return Response({"error": "No token provided."}, status=400)
+            
+    except Teacher.DoesNotExist:
+        return Response({"error": "Teacher profile not found."}, status=400)
