@@ -1,1 +1,18 @@
+# Security / Secrets
 .env
+test_twilio.py
+
+# Virtual Environments
+venv/
+env/
+
+# Python Cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database (If you use SQLite locally)
+*.sqlite3
+
+# VS Code settings
+.vscode/
