@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import Department, Subject, Teacher, ClassSession, LeaveRequest, SubstitutionProposal
 
-# This registers your tables so they appear in the Admin Dashboard
+# tables - Admin Dashboard
 @admin.register(Department)
 class DepartmentAdmin(admin.ModelAdmin):
     list_display = ('name', 'code')

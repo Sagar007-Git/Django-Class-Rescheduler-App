@@ -1,5 +1,3 @@
-
-
 from django.contrib.auth import authenticate
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny
@@ -16,7 +14,6 @@ import json
 from .models import Teacher, ClassSession, LeaveRequest, SubstitutionProposal, Subject
 from .serializers import (TeacherSerializer, ClassSessionSerializer, 
                           LeaveRequestSerializer, UserSerializer)
-from .firebase_utils import send_push_notification  # Import the utility
 
 # --- 1. AUTHENTICATION & PROFILE ---
 
@@ -131,7 +128,8 @@ def recommend_substitutes(request):
 @permission_classes([IsAuthenticated])
 def create_request(request):
     """
-    Teacher creates a request. Status -> PENDING_HOD.
+    Teacher creates a request. 
+    Prevents Duplicate Requests for the same slot.
     """
     try:
         requester = Teacher.objects.get(user=request.user)
@@ -139,21 +137,40 @@ def create_request(request):
         return Response({"error": "You are not a registered teacher."}, status=400)
 
     data = request.data.copy()
+    date_str = data.get('date')
+    time_str = data.get('time_slot')
+
+    # --- NEW: DUPLICATE CHECK ---
+    existing_request = LeaveRequest.objects.filter(
+        requester=requester,
+        date=date_str,
+        time_slot=time_str
+    ).exists()
+
+    if existing_request:
+        return Response(
+            {"error": "You have already requested a substitute for this class."}, 
+            status=400
+        )
+    # -----------------------------
     
     # Create the Request
     leave_req = LeaveRequest.objects.create(
         requester=requester,
-        date=data['date'],
-        time_slot=data['time_slot'],
-        reason=data['reason'],
+        date=date_str,
+        time_slot=time_str,
+        reason=data.get('reason', ''),
         status='PENDING_HOD'
     )
 
     # Create Proposals (Invites) for the selected teachers
     preferred_ids = data.get('preferred_teacher_ids', []) # List of IDs [2, 5, 8]
     for tid in preferred_ids:
-        candidate = Teacher.objects.get(id=tid)
-        SubstitutionProposal.objects.create(request=leave_req, candidate=candidate)
+        try:
+            candidate = Teacher.objects.get(id=tid)
+            SubstitutionProposal.objects.create(request=leave_req, candidate=candidate)
+        except Teacher.DoesNotExist:
+            continue # Skip invalid IDs
 
     return Response({"message": "Request created. Waiting for HOD approval."}, status=201)
 
@@ -168,24 +185,42 @@ def respond_to_request(request, request_id):
     teacher = Teacher.objects.get(user=request.user)
     leave_req = get_object_or_404(LeaveRequest, id=request_id)
 
+    # REJECTION LOGIC
     if action == 'REJECT':
-        # Simple rejection logic
-        proposal = SubstitutionProposal.objects.get(request=leave_req, candidate=teacher)
-        proposal.is_rejected = True
-        proposal.save()
-        return Response({"message": "You rejected the request."})
+        # We only mark it rejected if a proposal actually exists
+        try:
+            proposal = SubstitutionProposal.objects.get(request=leave_req, candidate=teacher)
+            proposal.is_rejected = True
+            proposal.save()
+            return Response({"message": "You rejected the request."})
+        except SubstitutionProposal.DoesNotExist:
+            return Response({"message": "You were not invited, so no need to reject."}, status=200)
 
+    # ACCEPTANCE LOGIC
     elif action == 'ACCEPT':
         try:
             with transaction.atomic():
                 # LOCK the row so no one else can write to it
                 locked_req = LeaveRequest.objects.select_for_update().get(id=request_id)
                 
+                # Check 1: Is it already taken?
                 if locked_req.status == 'FILLED':
                     return Response({"error": "Too late! Another teacher accepted it."}, status=400)
                 
+                # Check 2: Is it approved by HOD?
                 if locked_req.status != 'APPROVED_OPEN':
-                    return Response({"error": "Request is not open for acceptance."}, status=400)
+                    return Response({"error": "Request is not open for acceptance (Status is " + locked_req.status + ")"}, status=400)
+
+                # Check 3: Prevent self-acceptance
+                if locked_req.requester == teacher:
+                    return Response({"error": "You cannot accept your own request!"}, status=400)
+
+                # --- THE FIX: Auto-Create Proposal if missing ---
+                # This allows any teacher to accept, even if not originally invited.
+                proposal, created = SubstitutionProposal.objects.get_or_create(
+                    request=locked_req, 
+                    candidate=teacher
+                )
 
                 # Assign the substitute
                 locked_req.status = 'FILLED'
@@ -193,86 +228,73 @@ def respond_to_request(request, request_id):
                 locked_req.save()
                 
                 # Mark proposal as accepted
-                proposal = SubstitutionProposal.objects.get(request=leave_req, candidate=teacher)
                 proposal.is_accepted = True
                 proposal.save()
 
                 return Response({"message": "Success! You are the substitute."})
+                
         except Exception as e:
             return Response({"error": str(e)}, status=500)
-
+    
+    else:
+        return Response({"error": "Invalid action. Use 'ACCEPT' or 'REJECT'."}, status=400)
+    
 # --- 5. HOD ACTIONS ---
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def hod_action(request, request_id):
     """
-    HOD Approves or Rejects a PENDING request.
-    """
-    # Security check: Ensure user is HOD
-    try:
-        hod = Teacher.objects.get(user=request.user)
-        if not hod.is_hod:
-            return Response({"error": "Unauthorized. HOD access required."}, status=403)
-    except Teacher.DoesNotExist:
-        return Response({"error": "User profile not found."}, status=400)
-
-    action = request.data.get('action') # 'APPROVE' or 'REJECT'
-    leave_req = get_object_or_404(LeaveRequest, id=request_id)
-
-    if action == 'APPROVE':
-        leave_req.status = 'APPROVED_OPEN'
-        leave_req.save()
-        
-        # --- NEW NOTIFICATION LOGIC ---
-        # 1. Find all candidates invited to this request
-        proposals = SubstitutionProposal.objects.filter(request=leave_req)
-        
-        # 2. Collect their FCM Tokens (Phones)
-        tokens = []
-        for prop in proposals:
-            if prop.candidate.fcm_token: # Only if they have a token saved
-                tokens.append(prop.candidate.fcm_token)
-        
-        # 3. Send the Push Notification
-        if tokens:
-            send_push_notification(
-                tokens=tokens,
-                title="New Substitution Request",
-                body=f"Request approved for {leave_req.date}. Can you accept?",
-                data={"request_id": str(leave_req.id), "click_action": "FLUTTER_NOTIFICATION_CLICK"}
-            )
-        # -----------------------------
-
-        return Response({"message": "Request Approved. Candidates notified."})
-    
-    elif action == 'REJECT':
-        leave_req.status = 'REJECTED'
-        leave_req.save()
-        return Response({"message": "Request Rejected."})
-    
-    return Response({"error": "Invalid action"}, status=400)
-
-
-# --- 6. UTILITY ENDPOINTS ---
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def update_fcm_token(request):
-    """
-    The Mobile App calls this to save the user's device token.
-    Without this, we can't send push notifications.
+    HOD Approves/Rejects a request.
+    (External SMS notifications have been removed for MVP)
     """
     try:
-        teacher = Teacher.objects.get(user=request.user)
-        token = request.data.get('fcm_token')
-        
-        if token:
-            teacher.fcm_token = token
-            teacher.save()
-            return Response({"message": "FCM Token updated successfully."})
-        else:
-            return Response({"error": "No token provided."}, status=400)
+        req = LeaveRequest.objects.get(id=request_id)
+        if not req.requester.is_hod: # Safety check
+             pass 
+
+        action = request.data.get('action') # "APPROVE" or "REJECT"
+
+        if action == 'APPROVE':
+            req.status = 'APPROVED_OPEN'
+            req.save()
+            return Response({"message": "Request Approved successfully."})
+
+        elif action == 'REJECT':
+            req.status = 'REJECTED'
+            req.save()
+            return Response({"message": "Request Rejected."})
             
-    except Teacher.DoesNotExist:
-        return Response({"error": "Teacher profile not found."}, status=400)
+        else:
+            return Response({"error": "Invalid action"}, status=400)
+
+    except LeaveRequest.DoesNotExist:
+        return Response({"error": "Request not found"}, status=404)
+    
+# --- ADD THESE TO api/views.py ---
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_requests(request):
+    """
+    Teacher: View history of requests I have sent.
+    """
+    # Get requests where I am the requester
+    my_requests = LeaveRequest.objects.filter(requester__user=request.user).order_by('-date')
+    serializer = LeaveRequestSerializer(my_requests, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_hod_requests(request):
+    """
+    HOD: View ALL requests that need approval.
+    """
+    # Security Check: Is this user actually an HOD?
+    if not request.user.teacher.is_hod:
+        return Response({"error": "Authorized for HOD only"}, status=403)
+
+    # Get all requests that are pending
+    pending_requests = LeaveRequest.objects.filter(status='PENDING').order_by('date')
+    serializer = LeaveRequestSerializer(pending_requests, many=True)
+    return Response(serializer.data)

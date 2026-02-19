@@ -19,14 +19,16 @@ class Subject(models.Model):
         return self.name
 
 class Teacher(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE) # Links to auth_users
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
     department = models.ForeignKey(Department, on_delete=models.CASCADE)
-    subjects = models.ManyToManyField(Subject, related_name='qualified_teachers') # The "Teacher_Subjects" Table
+    subjects = models.ManyToManyField(Subject)
     is_hod = models.BooleanField(default=False)
-    fcm_token = models.CharField(max_length=255, blank=True, null=True) # For Notifications
+    
+    # --- MAKE SURE THIS LINE IS HERE AND SAVED ---
+    mobile_number = models.CharField(max_length=15, blank=True, null=True)
+    # ---------------------------------------------
 
-    def __str__(self):
-        return self.user.get_full_name()
+    def __str__(self): return self.user.username
 
 # --- 2. RECURRING SCHEDULE (Template) ---
 

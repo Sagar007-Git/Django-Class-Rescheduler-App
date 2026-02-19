@@ -1,112 +1,185 @@
 import os
 import django
 import random
-from datetime import time
+from datetime import time, date, timedelta
 
-# Setup Django environment
+# Setup Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
 django.setup()
 
 from django.contrib.auth.models import User
-from api.models import Department, Subject, Teacher, ClassSession
+from api.models import Department, Subject, Teacher, ClassSession, LeaveRequest
+
+# --- CONFIGURATION ---
+DEPT_NAME = "Electronics & Communication"
+DEPT_CODE = "ECE"
+
+TEACHER_NAMES = [
+    ("Aarav", "Sharma"),      # Teacher 1
+    ("Vivaan", "Gupta"),      # Teacher 2
+    ("Aditya", "Iyer"),       # Teacher 3
+    ("Vihaan", "Malhotra"),   # Teacher 4
+    ("Arjun", "Singh"),       # Teacher 5
+    ("Amit", "Verma"),        # Teacher 6 (Busy Scenario)
+    ("Sneha", "Reddy"),       # Teacher 7 (High Load Scenario)
+    ("Sagar", "Patil"),       # Teacher 8 (YOU - The Hero)
+    ("Reyansh", "Kaur"),      # Teacher 9
+    ("Muhammad", "Khan"),     # Teacher 10
+    ("Krishna", "Das"),       # Teacher 11
+    ("Ananya", "Nair"),       # Teacher 12
+    ("Diya", "Menon"),        # Teacher 13
+    ("Kavya", "Joshi"),       # Teacher 14
+    ("Suresh", "Rao")         # Teacher 15 (HOD)
+]
+
+# ECE Subjects with Semesters
+SUBJECTS_DATA = [
+    # Sem 3
+    {"name": "Digital Electronics", "code": "EC301", "sem": 3},
+    {"name": "Signals and Systems", "code": "EC302", "sem": 3},
+    {"name": "Network Theory", "code": "EC303", "sem": 3},
+    # Sem 5
+    {"name": "Microprocessors", "code": "EC501", "sem": 5},
+    {"name": "Control Systems", "code": "EC502", "sem": 5},
+    {"name": "DSP", "code": "EC503", "sem": 5},
+    # Sem 7
+    {"name": "VLSI Design", "code": "EC701", "sem": 7},
+    {"name": "Embedded Systems", "code": "EC702", "sem": 7},
+    {"name": "Wireless Comm", "code": "EC703", "sem": 7},
+]
+
+# Time Slots (Mon-Fri, 9 AM - 4 PM)
+DAYS = [0, 1, 2, 3, 4] # Mon=0, Fri=4
+TIMES = [time(9,0), time(10,0), time(11,0), time(12,0), time(14,0), time(15,0)]
 
 def populate():
-    print("WARNING: This will clear existing data to ensure a clean test.")
-    confirm = input("Type 'yes' to proceed: ")
-    if confirm != 'yes':
-        return
+    print(f"--- STARTING POPULATION FOR {DEPT_CODE} ---")
+    confirm = input("This will WIPE all data. Type 'yes' to proceed: ")
+    if confirm != 'yes': return
 
-    # 1. Clear Data
-    print("Clearing old data...")
+    # 1. WIPE DATA
+    print("1. Wiping Database...")
+    LeaveRequest.objects.all().delete()
     ClassSession.objects.all().delete()
     Teacher.objects.all().delete()
     Subject.objects.all().delete()
     Department.objects.all().delete()
     User.objects.filter(username__startswith="teacher").delete()
 
-    # 2. Create Department
-    ece = Department.objects.create(name="Electronics & Comm", code="ECE")
-    print(f"Created Dept: {ece}")
-
-    # 3. Create Subjects (Mapped to Semesters)
-    # We use the code to hint at the semester (e.g., EC301 = 3rd Sem)
-    subjects_data = [
-        ("Network Analysis", "EC301"),   # 3rd Sem
-        ("Analog Circuits", "EC302"),    # 3rd Sem
-        ("Control Systems", "EC501"),    # 5th Sem
-        ("VLSI Design", "EC502"),        # 5th Sem
-        ("Embedded Systems", "EC701"),   # 7th Sem
-        ("Artificial Intel", "EC702")    # 7th Sem
-    ]
+    # 2. CREATE DEPT & SUBJECTS
+    print(f"2. Creating {DEPT_NAME}...")
+    dept = Department.objects.create(name=DEPT_NAME, code=DEPT_CODE)
     
     db_subjects = []
-    for name, code in subjects_data:
-        sub = Subject.objects.create(name=name, code=code, department=ece)
-        db_subjects.append(sub)
-        print(f"Created Subject: {name}")
+    for sub in SUBJECTS_DATA:
+        s = Subject.objects.create(name=sub["name"], code=sub["code"], department=dept)
+        db_subjects.append(s)
+        print(f"   - Created: {sub['name']} (Sem {sub['sem']})")
 
-    # 4. Create 10 Teachers
-    # We divide them into groups so they have different qualifications
-    print("Creating 10 Teachers...")
+    # 3. CREATE TEACHERS
+    print("3. Creating 15 Teachers...")
+    teachers = []
     
-    # Group A: Juniors (Teach 3rd Sem) - Teachers 1-3
-    # Group B: Seniors (Teach 5th Sem) - Teachers 4-6
-    # Group C: Experts (Teach 7th Sem) - Teachers 7-9
-    # Group D: The HOD (Teaches Everything) - Teacher 10
-
-    for i in range(1, 11):
+    for i, (first, last) in enumerate(TEACHER_NAMES, start=1):
         username = f"teacher{i}"
-        user = User.objects.create_user(username=username, password="password123")
-        is_hod = (i == 10) # Teacher 10 is HOD
         
-        teacher = Teacher.objects.create(user=user, department=ece, is_hod=is_hod)
-        
-        # Assign Subjects Logic
-        if i <= 3:
-            # Juniors teach 3rd Sem subjects
-            teacher.subjects.add(db_subjects[0], db_subjects[1])
-        elif i <= 6:
-            # Seniors teach 5th Sem (VLSI, Control)
-            teacher.subjects.add(db_subjects[2], db_subjects[3])
-        elif i <= 9:
-            # Experts teach 7th Sem
-            teacher.subjects.add(db_subjects[4], db_subjects[5])
-        else:
-            # HOD teaches VLSI and AI
-            teacher.subjects.add(db_subjects[3], db_subjects[5])
-            
-        teacher.save()
-
-    print("Teachers Created: teacher1 to teacher10 (Password: password123)")
-
-    # 5. Create a "Monday Morning" Schedule (The Trap)
-    # We want to test substitution for Monday 10:00 AM.
-    # Let's make HALF of them busy so the algorithm has to work.
-    
-    target_time = time(10, 0) # 10:00 AM
-    monday = 0 # Monday
-    
-    # Teachers 1, 2, 4, 7, 10 are BUSY teaching at 10 AM.
-    # Teachers 3, 5, 6, 8, 9 are FREE.
-    
-    busy_indices = [1, 2, 4, 7, 10] 
-    
-    print("Creating Schedule for Monday 10:00 AM...")
-    for i in busy_indices:
-        t_obj = Teacher.objects.get(user__username=f"teacher{i}")
-        # Assign them a random class
-        sub = t_obj.subjects.first() 
-        ClassSession.objects.create(
-            teacher=t_obj,
-            subject=sub,
-            day=monday,
-            start_time=target_time,
-            end_time=time(11, 0),
-            room_number=f"Room-{100+i}"
+        # Create User
+        u = User.objects.create_user(
+            username=username, 
+            password="password123",
+            first_name=first,
+            last_name=last,
+            email=f"{first.lower()}.{last.lower()}@college.edu"
         )
-        print(f"  -> Teacher{i} is BUSY teaching {sub.name}")
+        
+        # Determine Role & Mobile
+        is_hod = (i == 15)
+        mobile = f"+9198765432{i:02d}"
+        if i == 8: mobile = "+917019162285" # YOUR NUMBER
+        
+        t = Teacher.objects.create(user=u, department=dept, is_hod=is_hod, mobile_number=mobile)
+        teachers.append(t)
 
-    print("Population Complete! Ready to Test.")
+        # Assign Skills (3 subjects each)
+        # Using simple modulo logic to distribute subjects evenly
+        my_subs = [db_subjects[i % len(db_subjects)], db_subjects[(i+1) % len(db_subjects)]]
+        t.subjects.set(my_subs)
+        t.save()
+        print(f"   - {first} {last} ({username}) -> {my_subs[0].name}, {my_subs[1].name}")
+
+    # 4. GENERATE FULL SCHEDULE (The Heavy Lifting)
+    print("\n4. Generating Weekly Schedule (Randomized)...")
+    total_sessions = 0
+    
+    for t in teachers:
+        # Each teacher gets 4-6 random classes per week
+        num_classes = random.randint(4, 6)
+        
+        # Prevent double booking using a set of (day, time)
+        booked_slots = set()
+        
+        for _ in range(num_classes):
+            # Pick Random Day & Time
+            d = random.choice(DAYS)
+            tm = random.choice(TIMES)
+            
+            # Avoid duplicate slot for same teacher
+            if (d, tm) in booked_slots: continue
+            
+            # Avoid the "Trap" slot (Wed 11 AM) for Teacher 8 (Sagar) so he is free
+            # And avoid Wed 11 AM for Teacher 6 (Amit) so we can manually set him BUSY later
+            if d == 2 and tm == time(11,0) and (t.id == teachers[7].id or t.id == teachers[5].id):
+                continue
+
+            ClassSession.objects.create(
+                teacher=t,
+                subject=t.subjects.first(), # Just pick their first subject
+                day=d,
+                start_time=tm,
+                end_time=(datetime.combine(date.today(), tm) + timedelta(hours=1)).time(),
+                room_number=f"{random.randint(101, 305)}"
+            )
+            booked_slots.add((d, tm))
+            total_sessions += 1
+
+    print(f"   - Generated {total_sessions} regular class sessions.")
+
+    # 5. SETTING THE TRAP (Specific Scenarios)
+    print("\n5. Setting up 'The Perfect Storm' (Wed 11:00 AM)...")
+    
+    # Target: Wednesday (Day 2) at 11:00 AM
+    
+    # Scenario A: Teacher 6 (Amit Verma) is BUSY
+    ClassSession.objects.create(
+        teacher=teachers[5], # Teacher 6
+        subject=db_subjects[2], 
+        day=2, 
+        start_time=time(11, 0), 
+        end_time=time(12, 0),
+        room_number="LAB-1"
+    )
+    print("   - Amit Verma (Teacher 6) is manually set to BUSY.")
+
+    # Scenario B: Teacher 7 (Sneha Reddy) is OVERWORKED
+    # We give her 3 filled leave requests earlier in the week
+    for _ in range(3):
+        LeaveRequest.objects.create(
+            requester=teachers[0], 
+            final_substitute=teachers[6], # Teacher 7
+            date=date(2024, 2, 12), # Monday
+            time_slot=time(9, 0),
+            status='FILLED'
+        )
+    print("   - Sneha Reddy (Teacher 7) is manually set to TIRED (Load=3).")
+
+    # Scenario C: Teacher 8 (Sagar) is FREE
+    # We ensured in step 4 that he has NO class on Wed 11 AM.
+    print(f"   - Sagar Patil (Teacher 8) is FREE and READY.")
+
+    print("\n--- DONE! ECE Schedule Complete. ---")
+
+# Helper for time math
+from datetime import datetime
 
 if __name__ == '__main__':
     populate()
